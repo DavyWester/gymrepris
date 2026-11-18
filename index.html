@@ -141,6 +141,10 @@ const MAX_CLIPS=3, MAX_CLIP_S=20, KEY_EVERY_US=500000;
 const DEF={delay:8,res:720,fps:60,cam:'',pip:true,auto:true,sens:5,zone:null,pre:2,post:1.5,manual:10,speed:0.5};
 let S=Object.assign({},DEF);
 try{Object.assign(S,JSON.parse(localStorage.getItem('gymrepris')||'{}'))}catch{}
+// A stored value that is not a number of the right kind falls back to the default.
+for(const k in DEF)if(typeof DEF[k]==='number'&&!Number.isFinite(S[k]))S[k]=DEF[k];
+if(![720,1080].includes(S.res))S.res=DEF.res;
+if(![30,60].includes(S.fps))S.fps=DEF.fps;
 const save=()=>{try{localStorage.setItem('gymrepris',JSON.stringify(S))}catch{}};
 
 /* ---------- Encoded video in memory ---------- */
@@ -471,7 +475,7 @@ for(const [id,kind] of Object.entries(fields)){
   if(kind==='b')el.checked=S[id];else el.value=S[id];
   el.addEventListener('change',()=>{
     let v=kind==='b'?el.checked:kind==='n'?+el.value:el.value;
-    if(kind==='n'&&el.min!==''){v=Math.max(+el.min,Math.min(+el.max,isNaN(v)?DEF[id]:v));el.value=v}
+    if(kind==='n'&&el.min){v=Math.max(+el.min,Math.min(+el.max,isNaN(v)?DEF[id]:v));el.value=v}
     S[id]=v;save();
     if(id==='pip')applyPip();
     if(id==='cam'||id==='res'||id==='fps')startCamera();
