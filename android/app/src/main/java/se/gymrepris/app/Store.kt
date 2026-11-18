@@ -112,7 +112,13 @@ class Settings(ctx: Context) {
     /** Playback speed in the clip viewer, in eighths. */
     var speed: Int get() = int("speed", 4); set(v) = set("speed", v)
 
-    val preUs = 2_000_000L
-    val postUs = 1_500_000L
-    val manualUs = 10_000_000L
+    /** Half seconds kept before the movement began and after it ended. */
+    var pre: Int get() = int("pre", 4); set(v) = set("pre", v)
+    var post: Int get() = int("post", 3); set(v) = set("post", v)
+    /** Seconds the button Spara klipp keeps. */
+    var manual: Int get() = int("manual", 10); set(v) = set("manual", v)
+
+    val preUs get() = pre * 500_000L
+    val postUs get() = post * 500_000L
+    val manualUs get() = manual * 1_000_000L
 }

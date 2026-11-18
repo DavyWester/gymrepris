@@ -250,7 +250,8 @@ class Pipeline(private val act: Activity, private val s: Settings, private val u
     private var motPeak = 0f
     private var motThumb: Bitmap? = null
 
-    private fun threshold() = (0.08 * (0.003 / 0.08).pow((s.sens - 1) / 9.0)).toFloat()
+    /** The share of the picture that has to change for it to count as movement. */
+    fun threshold() = (0.08 * (0.003 / 0.08).pow((s.sens - 1) / 9.0)).toFloat()
 
     private fun onSmallImage(img: Image) {
         val nowMs = SystemClock.elapsedRealtime()
