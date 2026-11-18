@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#0d1117">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<title>Gymrepris</title>
+<style>
+:root{--bg:#0d1117;--panel:#161c26ee;--line:#2b3545;--fg:#eef2f7;--dim:#9aa7b8;--accent:#ffd23f;--rec:#ff5252;color-scheme:dark}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;margin:0;background:#000;color:var(--fg);font:16px/1.35 system-ui,"Segoe UI",Roboto,sans-serif;overflow:hidden;user-select:none;touch-action:manipulation}
+[hidden]{display:none!important}
+button{font:inherit;color:var(--fg);background:#232c3a;border:1px solid var(--line);border-radius:12px;min-height:56px;min-width:56px;padding:0 18px;cursor:pointer}
+button:active{background:#33405a}
+button.primary{background:var(--accent);color:#1a1400;border-color:var(--accent);font-weight:700}
+button.on{border-color:var(--accent);color:var(--accent)}
+#view,#clipCanvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+#live{position:absolute;top:12px;right:12px;width:22vw;max-width:260px;border:2px solid var(--line);border-radius:10px;background:#000;z-index:2}
+#live.off{width:2px;height:2px;opacity:.01;border:0}
+#live.full{inset:0;top:0;right:0;width:100%;height:100%;max-width:none;border:0;border-radius:0;object-fit:contain;z-index:20}
+#chip{position:absolute;top:12px;left:12px;z-index:3;display:flex;gap:8px;align-items:center;background:var(--panel);border-radius:999px;padding:8px 14px;font-weight:600}
+#chip i{width:12px;height:12px;border-radius:50%;background:var(--rec);animation:bl 1s infinite}
+@keyframes bl{50%{opacity:.25}}
+#msg{position:absolute;inset:0;z-index:4;display:flex;flex-direction:column;gap:18px;align-items:center;justify-content:center;text-align:center;padding:24px;pointer-events:none}
+#msg>*{pointer-events:auto}
+#msg h1{margin:0;font-size:clamp(28px,5vw,48px)}
+#msg p{margin:0;max-width:34em;color:var(--dim);font-size:18px}
+#msg .big{font-size:clamp(40px,9vw,96px);font-weight:800;color:var(--accent);font-variant-numeric:tabular-nums;text-shadow:0 2px 12px #000}
+#msg.start{background:var(--bg)}
+#bar{position:absolute;left:0;right:0;bottom:0;z-index:5;display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:10px max(12px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));background:linear-gradient(#0000,#000c 40%)}
+.grp{display:flex;align-items:center;gap:8px;background:var(--panel);border-radius:14px;padding:6px}
+#delayVal{min-width:5.2em;text-align:center;font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+#delayVal small{display:block;font-size:11px;font-weight:500;color:var(--dim);letter-spacing:.06em;text-transform:uppercase}
+.grp button.sq{font-size:28px;padding:0;width:60px}
+#clips{display:flex;gap:8px;margin-inline:auto}
+.clip{padding:4px;min-height:0;width:112px;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:12px;font-variant-numeric:tabular-nums}
+.clip img{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:8px;background:#000;display:block}
+.clip.empty{border-style:dashed;color:var(--dim);justify-content:center;height:86px;background:#161c2688}
+.clip.new{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+#settings{position:absolute;z-index:10;top:0;right:0;bottom:0;width:min(440px,100%);background:var(--bg);border-left:1px solid var(--line);padding:18px;overflow:auto;display:flex;flex-direction:column;gap:14px}
+#settings>*{flex-shrink:0}
+#settings h2{margin:0;font-size:22px;display:flex;justify-content:space-between;align-items:center}
+#settings h3{margin:10px 0 0;font-size:13px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase}
+#settings label{display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:44px}
+#settings select,#settings input[type=number]{font:inherit;color:var(--fg);background:#232c3a;border:1px solid var(--line);border-radius:10px;padding:10px;min-width:8em}
+#settings input[type=number]{min-width:0;width:5.5em}
+#settings input[type=checkbox]{width:28px;height:28px;accent-color:var(--accent)}
+#settings input[type=range]{flex:1;accent-color:var(--accent);height:36px}
+#meter{position:relative;height:16px;background:#232c3a;border-radius:8px;overflow:hidden}
+#meterFill{position:absolute;inset:0 auto 0 0;width:0;background:var(--dim)}
+#meterFill.hit{background:var(--accent)}
+#meterThr{position:absolute;top:0;bottom:0;width:2px;background:var(--rec)}
+#info{color:var(--dim);font-size:13px}
+.hint{color:var(--dim);font-size:13px;margin:0}
+#zone{position:absolute;inset:0;z-index:21;touch-action:none}
+#zoneBox{position:absolute;border:3px solid var(--accent);background:#ffd23f22;pointer-events:none}
+#zoneBar{position:absolute;left:0;right:0;bottom:0;display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap;padding:14px;background:#000a}
+#clipView{position:absolute;inset:0;z-index:30;background:#000}
+#clipTop{position:absolute;top:0;left:0;right:0;z-index:2;display:flex;justify-content:space-between;align-items:center;padding:12px;background:linear-gradient(#000c,#0000);font-weight:600;font-size:18px}
+#clipBar{position:absolute;left:0;right:0;bottom:0;z-index:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));background:linear-gradient(#0000,#000d 35%)}
+#seek{flex:1 1 240px;height:44px;accent-color:var(--accent)}
+#clipTime{font-variant-numeric:tabular-nums;min-width:8.5em;text-align:right}
+#toast{position:absolute;top:70px;left:50%;transform:translateX(-50%);z-index:40;background:var(--accent);color:#1a1400;font-weight:700;border-radius:999px;padding:10px 20px}
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<video id="live" muted playsinline autoplay></video>
+<div id="chip" hidden><i></i><span>Sparar klipp</span></div>
+
+<div id="msg" class="start">
+  <h1>Gymrepris</h1>
+  <p>Ställ upp surfplattan så att kameran ser redskapet. Skärmen visar sedan det kameran såg för några sekunder sedan, så att gymnasten hinner fram och ser sin egen övning.</p>
+  <button id="startBtn" class="primary" style="font-size:22px;min-height:72px;padding:0 44px">Starta kameran</button>
+</div>
+
+<div id="bar" hidden>
+  <div class="grp">
+    <button id="dMinus" class="sq" aria-label="Kortare fördröjning">−</button>
+    <div id="delayVal"><small>Fördröjning</small><span>8 s</span></div>
+    <button id="dPlus" class="sq" aria-label="Längre fördröjning">+</button>
+  </div>
+  <div id="clips"></div>
+  <div class="grp">
+    <button id="saveBtn">Spara klipp</button>
+    <button id="setBtn">Inställningar</button>
+    <button id="fsBtn">Helskärm</button>
+  </div>
+</div>
+
+<div id="settings" hidden>
+  <h2>Inställningar <button id="setClose">Stäng</button></h2>
+  <h3>Kamera</h3>
+  <label>Kamera <select id="cam"></select></label>
+  <label>Upplösning <select id="res"><option value="720">720p</option><option value="1080">1080p</option></select></label>
+  <label>Bilder per sekund <select id="fps"><option value="30">30</option><option value="60">60</option></select></label>
+  <label>Visa livebild i hörnet <input type="checkbox" id="pip"></label>
+  <h3>Klipp</h3>
+  <label>Spara klipp automatiskt vid rörelse <input type="checkbox" id="auto"></label>
+  <label>Känslighet <input type="range" id="sens" min="1" max="10" step="1"></label>
+  <div id="meter"><div id="meterFill"></div><div id="meterThr"></div></div>
+  <p class="hint">Stapeln visar rörelsen just nu. När den går förbi det röda strecket räknas det som en övning. Ställ känsligheten så att stapeln ligger under strecket när ingen hoppar.</p>
+  <label>Område som bevakas <button id="zoneBtn">Rita område</button></label>
+  <label>Sekunder före rörelsen <input type="number" id="pre" min="0" max="5" step="0.5"></label>
+  <label>Sekunder efter rörelsen <input type="number" id="post" min="0.5" max="5" step="0.5"></label>
+  <label>Längd på knappen Spara klipp (s) <input type="number" id="manual" min="3" max="20" step="1"></label>
+  <div id="info"></div>
+</div>
+
+<div id="zone" hidden>
+  <div id="zoneBox"></div>
+  <div id="zoneBar">
+    <span>Dra en ruta över området där övningen görs.</span>
+    <button id="zoneAll">Hela bilden</button>
+    <button id="zoneDone" class="primary">Klar</button>
+  </div>
+</div>
+
+<div id="clipView" hidden>
+  <canvas id="clipCanvas"></canvas>
+  <div id="clipTop"><span id="clipTitle"></span><button id="clipClose">Stäng</button></div>
+  <div id="clipBar">
+    <button id="stepB" aria-label="En bild bakåt">−1 bild</button>
+    <button id="playBtn" class="primary" style="min-width:110px">Paus</button>
+    <button id="stepF" aria-label="En bild framåt">+1 bild</button>
+    <span id="speeds" style="display:flex;gap:6px">
+      <button data-s="1">1×</button><button data-s="0.5">½</button><button data-s="0.25">¼</button><button data-s="0.125">⅛</button>
+    </span>
+    <input type="range" id="seek" min="0" max="1000" value="0">
+    <span id="clipTime"></span>
+  </div>
+</div>
+<div id="toast" hidden></div>
+
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const MAX_CLIPS=3, MAX_CLIP_S=20, KEY_EVERY_US=500000;
+const DEF={delay:8,res:720,fps:60,cam:'',pip:true,auto:true,sens:5,zone:null,pre:2,post:1.5,manual:10,speed:0.5};
+let S=Object.assign({},DEF);
+try{Object.assign(S,JSON.parse(localStorage.getItem('gymrepris')||'{}'))}catch{}
+const save=()=>{try{localStorage.setItem('gymrepris',JSON.stringify(S))}catch{}};
+
+/* ---------- Encoded video in memory ---------- */
+// The newest minute of encoded video. Sequence numbers keep counting when old chunks are dropped.
+const live={buf:[],base:0,static:false,get first(){return this.base},get end(){return this.base+this.buf.length},get(i){return this.buf[i-this.base]}};
+const clipSource=chunks=>({static:true,first:0,end:chunks.length,get:i=>chunks[i]});
+// Last sequence number whose timestamp is at or before ts; first-1 when there is none.
+function findLE(s,ts){let lo=s.first,hi=s.end-1,r=s.first-1;while(lo<=hi){const m=(lo+hi)>>1;if(s.get(m).timestamp<=ts){r=m;lo=m+1}else hi=m-1}return r}
+
+/* ---------- Player: shows the frame that belongs to a given timestamp ---------- */
+class Player{
+  constructor(canvas){this.cv=canvas;this.ctx=canvas.getContext('2d');this.pending=[];this.dec=null;this.cfg=null;this.src=null;this.feed=0;this.shown=-1;this.dead=true;this.flushed=false;this.catchup=0;this.retryAt=0;this.drawn=0}
+  setCfg(c){this.cfg=c;this.dead=true}
+  drop(){for(const f of this.pending)f.close();this.pending=[]}
+  close(){this.drop();try{if(this.dec&&this.dec.state!=='closed')this.dec.close()}catch{}this.dec=null;this.dead=true}
+  resync(want){
+    const s=this.src;this.drop();
+    try{
+      if(!this.dec||this.dec.state==='closed')this.dec=new VideoDecoder({output:f=>this.pending.push(f),error:e=>{console.warn('decoder',e);this.dead=true}});
+      else this.dec.reset();
+      this.dec.configure(this.cfg);
+    }catch(e){console.warn('decoder setup',e);this.dec=null;return false}
+    let i=want;while(i>s.first&&s.get(i).type!=='key')i--;
+    if(s.get(i).type!=='key')return false;
+    this.feed=i;this.shown=-1;this.dead=false;this.flushed=false;this.catchup=performance.now();return true;
+  }
+  tick(target){
+    const s=this.src;if(!s||!this.cfg||s.end<=s.first)return false;
+    const want=findLE(s,target);if(want<s.first)return false;
+    const wantTs=s.get(want).timestamp,now=performance.now();
+    const inRange=this.feed>=s.first&&this.feed<=s.end;
+    const behind=inRange&&this.feed<=want&&wantTs-s.get(this.feed).timestamp>1.5e6;
+    if(this.dead||!inRange||this.shown>wantTs||behind){
+      if(now<this.retryAt)return false;
+      this.retryAt=now+120;
+      if(!this.resync(want))return false;
+    }
+    try{
+      // Only a few decoded frames are held at a time; a hardware decoder stalls when its output pool is full.
+      while(this.feed<s.end&&this.pending.length<5&&this.dec.decodeQueueSize<4){
+        const c=s.get(this.feed);if(c.timestamp>target+1e5)break;
+        this.dec.decode(c);this.feed++;
+      }
+      if(s.static&&this.feed===s.end&&!this.flushed){this.flushed=true;this.dec.flush().catch(()=>{})}
+    }catch(e){console.warn('decode',e);this.dead=true;return false}
+    let f=null;
+    while(this.pending.length&&this.pending[0].timestamp<=target){if(f)f.close();f=this.pending.shift()}
+    if(f){
+      // After a jump the frames between the key frame and the wanted frame are decoded but not shown.
+      if(!this.catchup||f.timestamp>=wantTs||now-this.catchup>1500){
+        const w=f.displayWidth,h=f.displayHeight;
+        if(this.cv.width!==w||this.cv.height!==h){this.cv.width=w;this.cv.height=h}
+        this.ctx.drawImage(f,0,0,w,h);this.shown=f.timestamp;this.catchup=0;this.drawn++;
+      }
+      f.close();
+    }
+    return true;
+  }
+}
+const livePlayer=new Player($('view'));livePlayer.src=live;
+
+/* ---------- Camera and encoder ---------- */
+let stream=null,track=null,session=0,enc=null,encState='off',encW=0,encH=0,encLabel='',liveCfg=null;
+let lastKey=-1e15,lastTs=-1,offMs=null,wallTs=false,badTs=0,lastSample=0,encErrors=0,fatal='';
+const badCfg=new Set(),stat={frames:0,chunks:0};
+const nowTs=()=>(performance.now()-offMs)*1000;
+
+function resetPipeline(){
+  try{if(enc&&enc.state!=='closed')enc.close()}catch{}
+  enc=null;encState='off';liveCfg=null;
+  live.base+=live.buf.length;live.buf=[];
+  lastKey=-1e15;lastTs=-1;offMs=null;badTs=0;prev=null;mot.state=0;
+  livePlayer.cfg=null;livePlayer.dead=true;
+}
+function stopCamera(){
+  resetPipeline();
+  if(stream)stream.getTracks().forEach(t=>t.stop());
+  stream=null;track=null;
+}
+async function startCamera(){
+  const my=++session;stopCamera();fatal='';encErrors=0;
+  if(!navigator.mediaDevices||!window.VideoEncoder||!window.VideoDecoder){fatal='Den här webbläsaren saknar det som behövs. Använd Chrome på surfplattan och öppna sidan över https.';return}
+  const v={width:{ideal:S.res===1080?1920:1280},height:{ideal:S.res},frameRate:{ideal:S.fps}};
+  if(S.cam)v.deviceId={exact:S.cam};else v.facingMode={ideal:'environment'};
+  let st;
+  try{st=await navigator.mediaDevices.getUserMedia({video:v,audio:false})}
+  catch(e){
+    if(S.cam&&e.name!=='NotAllowedError'){S.cam='';save();return startCamera()}
+    fatal=e.name==='NotAllowedError'?'Sidan får inte använda kameran. Tillåt kameran i webbläsarens inställningar för sidan och försök igen.':'Kameran kunde inte startas ('+e.name+').';
+    return;
+  }
+  if(my!==session){st.getTracks().forEach(t=>t.stop());return}
+  stream=st;track=st.getVideoTracks()[0];
+  track.addEventListener('ended',()=>{if(my===session){fatal='Kameran stängdes av.';stopCamera()}});
+  const vid=$('live');vid.srcObject=st;vid.play().catch(()=>{});
+  fillCameras();
+  if('MediaStreamTrackProcessor' in window){
+    const reader=new MediaStreamTrackProcessor({track}).readable.getReader();
+    (async()=>{
+      try{for(;;){const {value,done}=await reader.read();if(done)break;if(my!==session){value.close();break}onFrame(value)}}
+      catch(e){console.warn('camera frames',e)}
+      try{reader.cancel()}catch{}
+    })();
+  }else{
+    const cb=(n,m)=>{if(my!==session)return;try{onFrame(new VideoFrame(vid,{timestamp:Math.round(m.mediaTime*1e6)}))}catch{}vid.requestVideoFrameCallback(cb)};
+    vid.requestVideoFrameCallback(cb);
+  }
+}
+async function fillCameras(){
+  try{
+    const list=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
+    const sel=$('cam');sel.textContent='';
+    sel.add(new Option('Automatisk (bakre)',''));
+    list.forEach((d,i)=>sel.add(new Option(d.label||'Kamera '+(i+1),d.deviceId)));
+    sel.value=S.cam;
+  }catch{}
+}
+function onFrame(f){
+  const now=performance.now();let ts=f.timestamp;
+  if(wallTs)ts=Math.round(now*1000);
+  if(ts==null||ts<=lastTs){
+    // The camera's own timestamps are unusable when they stand still; arrival time takes over.
+    if(!wallTs&&++badTs>20){wallTs=true;resetPipeline()}
+    f.close();return;
+  }
+  const w=f.displayWidth,h=f.displayHeight;
+  if(encState==='off'){encState='starting';initEncoder(w,h,session)}
+  if(encState!=='on'){f.close();return}
+  if(w!==encW||h!==encH){resetPipeline();f.close();return}
+  const o=now-ts/1000;
+  if(offMs===null||o<offMs)offMs=o;
+  else if(!wallTs&&o-offMs>1500){wallTs=true;resetPipeline();f.close();return}
+  lastTs=ts;stat.frames++;
+  if(now-lastSample>=80){lastSample=now;try{sampleMotion(f,ts)}catch(e){console.warn('motion',e)}}
+  if(enc.encodeQueueSize>3){f.close();return}
+  let fr=f;
+  if(wallTs){fr=new VideoFrame(f,{timestamp:ts});f.close()}
+  const key=ts-lastKey>=KEY_EVERY_US;if(key)lastKey=ts;
+  try{enc.encode(fr,{keyFrame:key})}catch(e){console.warn('encode',e);resetPipeline()}
+  fr.close();
+}
+async function initEncoder(w,h,my){
+  const fps=Math.round((track&&track.getSettings().frameRate)||S.fps||30);
+  const bitrate=Math.max(3e6,Math.min(16e6,Math.round(w*h*fps*0.12)));
+  const codecs=[['avc1.64002a',1],['avc1.4d002a',1],['avc1.42e02a',1],['avc1.42001f',1],['vp09.00.41.08',0],['vp8',0]];
+  let cfg=null;
+  find:for(const hw of ['prefer-hardware','no-preference'])for(const [codec,avc] of codecs){
+    if(badCfg.has(codec+hw))continue;
+    const t={codec,width:w,height:h,bitrate,framerate:fps,latencyMode:'realtime',hardwareAcceleration:hw};
+    if(avc)t.avc={format:'annexb'};
+    try{if((await VideoEncoder.isConfigSupported(t)).supported){cfg=t;break find}}catch{}
+  }
+  if(my!==session||encState!=='starting')return;
+  if(!cfg||encErrors>6){fatal='Surfplattan kunde inte koda videon. Prova 720p och 30 bilder per sekund i inställningarna.';encState='failed';return}
+  const key=cfg.codec+cfg.hardwareAcceleration;
+  enc=new VideoEncoder({output:onChunk,error:e=>{console.warn('encoder',e);badCfg.add(key);encErrors++;if(my===session)resetPipeline()}});
+  enc.configure(cfg);encW=w;encH=h;encState='on';
+  encLabel=(avcName(cfg.codec))+(cfg.hardwareAcceleration==='prefer-hardware'?', hårdvara':'')+' · '+w+'×'+h+' · '+fps+' bilder/s';
+}
+const avcName=c=>c.startsWith('avc1')?'H.264':c.startsWith('vp09')?'VP9':'VP8';
+function onChunk(c,meta){
+  if(meta&&meta.decoderConfig){
+    const d=meta.decoderConfig;
+    liveCfg={codec:d.codec,codedWidth:d.codedWidth||encW,codedHeight:d.codedHeight||encH,optimizeForLatency:true};
+    if(d.description)liveCfg.description=d.description;
+    livePlayer.setCfg(liveCfg);
+  }
+  if(!liveCfg||(!live.buf.length&&c.type!=='key'))return;
+  live.buf.push(c);stat.chunks++;
+  if(c.type!=='key')return;
+  // Old video is dropped up to a key frame, so the buffer always starts with one.
+  const keep=Math.max(S.delay+5,S.pre+MAX_CLIP_S+5,S.manual+5)*1e6,b=live.buf;let n=0;
+  for(let i=1;i<b.length;i++)if(b[i].type==='key'){if(c.timestamp-b[i].timestamp>=keep)n=i;else break}
+  if(n){b.splice(0,n);live.base+=n}
+}
+
+/* ---------- Motion detection and clips ---------- */
+const MW=96,MH=54;
+const mc=document.createElement('canvas');mc.width=MW;mc.height=MH;
+const mx=mc.getContext('2d',{willReadFrequently:true});
+const tc=document.createElement('canvas');tc.width=192;tc.height=108;const tx=tc.getContext('2d');
+let prev=null,score=0,clipId=0;
+const mot={state:0,start:0,last:0,n:0,peak:0,thumb:''};
+const clips=[];
+const threshold=()=>0.08*Math.pow(0.003/0.08,(S.sens-1)/9);
+function thumbOf(src,w,h){
+  const th=Math.max(2,Math.round(192*h/w));if(tc.height!==th)tc.height=th;
+  tx.drawImage(src,0,0,192,th);return tc.toDataURL('image/jpeg',0.7);
+}
+function sampleMotion(f,ts){
+  const z=S.zone||{x:0,y:0,w:1,h:1},W=f.displayWidth,H=f.displayHeight;
+  mx.drawImage(f,z.x*W,z.y*H,z.w*W,z.h*H,0,0,MW,MH);
+  const d=mx.getImageData(0,0,MW,MH).data,cur=new Uint8Array(MW*MH);let changed=0;
+  for(let i=0,j=0;j<cur.length;i+=4,j++){const l=(d[i]+2*d[i+1]+d[i+2])>>2;cur[j]=l;if(prev&&Math.abs(l-prev[j])>22)changed++}
+  const first=!prev;prev=cur;if(first)return;
+  score=changed/cur.length;
+  const active=S.auto&&score>threshold();
+  if(mot.state===0){
+    if(active){mot.state=1;mot.start=mot.last=ts;mot.n=1;mot.peak=score;mot.thumb=thumbOf(f,W,H)}
+    return;
+  }
+  if(active){mot.last=ts;mot.n++;if(score>mot.peak){mot.peak=score;mot.thumb=thumbOf(f,W,H)}}
+  if(ts-mot.last>S.post*1e6||ts-mot.start>MAX_CLIP_S*1e6){
+    mot.state=0;
+    // A single flicker is not an exercise; it takes about a third of a second of movement.
+    if(mot.n>=4)saveClip(mot.start-S.pre*1e6,ts,mot.thumb);
+  }
+}
+function saveClip(from,to,thumb){
+  if(!liveCfg||!live.buf.length)return false;
+  let i=Math.max(findLE(live,from),live.first);
+  while(i>live.first&&live.get(i).type!=='key')i--;
+  const e=findLE(live,to);
+  if(live.get(i).type!=='key'||e-i<5)return false;
+  const chunks=live.buf.slice(i-live.base,e-live.base+1);
+  clips.unshift({id:++clipId,at:new Date(),chunks,cfg:liveCfg,thumb,t0:chunks[0].timestamp,dur:chunks[chunks.length-1].timestamp-chunks[0].timestamp});
+  clips.length=Math.min(clips.length,MAX_CLIPS);
+  renderClips(true);toast('Klipp sparat');return true;
+}
+function saveManual(){
+  if(offMs===null)return;
+  const v=$('live');let thumb='';
+  try{thumb=thumbOf(v,v.videoWidth||16,v.videoHeight||9)}catch{}
+  if(!saveClip(nowTs()-S.manual*1e6,nowTs(),thumb))toast('Inget att spara ännu');
+}
+const hhmmss=d=>d.toLocaleTimeString('sv-SE');
+function renderClips(isNew){
+  const box=$('clips');box.textContent='';
+  for(let i=0;i<MAX_CLIPS;i++){
+    const c=clips[i],b=document.createElement('button');
+    if(!c){b.className='clip empty';b.disabled=true;b.textContent='Klipp '+(i+1)}
+    else{
+      b.className='clip'+(isNew&&i===0?' new':'');
+      const img=new Image();if(c.thumb)img.src=c.thumb;img.alt='';
+      const t=document.createElement('span');t.textContent=hhmmss(c.at)+' · '+(c.dur/1e6).toFixed(0)+' s';
+      b.append(img,t);b.onclick=()=>openClip(c);
+    }
+    box.append(b);
+  }
+}
+
+/* ---------- Clip viewer ---------- */
+const viewer={open:false,clip:null,src:null,pos:0,playing:false,last:0,drag:false,player:new Player($('clipCanvas'))};
+function openClip(c){
+  viewer.clip=c;viewer.src=clipSource(c.chunks);viewer.player.src=viewer.src;viewer.player.setCfg(c.cfg);
+  viewer.pos=0;viewer.playing=true;viewer.last=performance.now();viewer.open=true;
+  $('clipTitle').textContent='Klipp '+hhmmss(c.at);
+  $('clipView').hidden=false;markSpeed();
+}
+function closeClip(){viewer.open=false;viewer.player.close();$('clipView').hidden=true;livePlayer.dead=true}
+function markSpeed(){for(const b of $('speeds').children)b.classList.toggle('on',+b.dataset.s===S.speed)}
+function step(d){
+  const v=viewer;v.playing=false;
+  const i=Math.min(v.src.end-1,Math.max(0,findLE(v.src,v.clip.t0+v.pos)+d));
+  v.pos=v.src.get(i).timestamp-v.clip.t0;
+}
+function togglePlay(){const v=viewer;if(!v.playing&&v.pos>=v.clip.dur)v.pos=0;v.playing=!v.playing}
+function viewerTick(now){
+  const v=viewer,dt=Math.min(100,now-v.last);v.last=now;
+  if(v.playing){v.pos+=dt*1000*S.speed;if(v.pos>=v.clip.dur){v.pos=v.clip.dur;v.playing=false}}
+  v.player.tick(v.clip.t0+v.pos);
+  $('playBtn').textContent=v.playing?'Paus':'Spela';
+  if(!v.drag)$('seek').value=Math.round(v.pos/v.clip.dur*1000);
+  $('clipTime').textContent=(v.pos/1e6).toFixed(2)+' / '+(v.clip.dur/1e6).toFixed(2)+' s';
+}
+
+/* ---------- Screen loop ---------- */
+let started=false,toastUntil=0;
+function toast(t){$('toast').textContent=t;$('toast').hidden=false;toastUntil=performance.now()+1800}
+function loop(){
+  requestAnimationFrame(loop);
+  const now=performance.now();
+  if(toastUntil&&now>toastUntil){$('toast').hidden=true;toastUntil=0}
+  if(!started)return;
+  const msg=$('msg');let text='',big='';
+  if(viewer.open)viewerTick(now);
+  else if(fatal)text=fatal;
+  else if(offMs===null||!liveCfg||!live.buf.length)text='Startar kameran …';
+  else{
+    const target=(now-offMs-S.delay*1000)*1000;
+    livePlayer.tick(target);
+    const wait=(live.buf[0].timestamp-target)/1e6;
+    if(wait>0.05){text='Reprisen börjar om';big=Math.ceil(wait)+' s'}
+  }
+  const key=text+'|'+big;
+  if(msg.dataset.k!==key){
+    msg.dataset.k=key;msg.textContent='';msg.hidden=!text;
+    if(text){const p=document.createElement('p');p.textContent=text;msg.append(p)}
+    if(big){const b=document.createElement('div');b.className='big';b.textContent=big;msg.append(b)}
+    if(fatal&&!viewer.open){const b=document.createElement('button');b.className='primary';b.textContent='Försök igen';b.onclick=startCamera;msg.append(b)}
+  }
+  $('chip').hidden=mot.state!==1;
+  if(!$('settings').hidden){
+    const thr=threshold(),scale=v=>Math.min(100,Math.sqrt(v/0.3)*100);
+    $('meterFill').style.width=scale(score)+'%';$('meterFill').classList.toggle('hit',score>thr);
+    $('meterThr').style.left=scale(thr)+'%';
+    $('info').textContent=encLabel+(wallTs?' · egen klocka':'');
+  }
+}
+
+/* ---------- Controls ---------- */
+function showDelay(){$('delayVal').lastElementChild.textContent=S.delay+' s'}
+function setDelay(d){S.delay=Math.max(1,Math.min(60,S.delay+d));showDelay();save()}
+function hold(btn,fn){
+  let t=0,iv=0;const stop=()=>{clearTimeout(t);clearInterval(iv)};
+  btn.addEventListener('pointerdown',()=>{stop();fn();t=setTimeout(()=>{iv=setInterval(fn,90)},400)});
+  for(const e of ['pointerup','pointerleave','pointercancel'])btn.addEventListener(e,stop);
+}
+hold($('dMinus'),()=>setDelay(-1));hold($('dPlus'),()=>setDelay(1));
+hold($('stepB'),()=>step(-1));hold($('stepF'),()=>step(1));
+$('saveBtn').onclick=saveManual;
+$('fsBtn').onclick=()=>{if(document.fullscreenElement)document.exitFullscreen();else document.documentElement.requestFullscreen().catch(()=>{})};
+$('setBtn').onclick=()=>{$('settings').hidden=false};
+$('setClose').onclick=()=>{$('settings').hidden=true};
+$('clipClose').onclick=closeClip;
+$('playBtn').onclick=togglePlay;
+$('clipCanvas').onclick=togglePlay;
+$('speeds').onclick=e=>{const s=+e.target.dataset.s;if(s){S.speed=s;save();markSpeed()}};
+const seek=$('seek');
+seek.addEventListener('pointerdown',()=>{viewer.drag=true});
+seek.addEventListener('input',()=>{viewer.playing=false;viewer.pos=seek.value/1000*viewer.clip.dur});
+for(const e of ['pointerup','pointercancel','change'])seek.addEventListener(e,()=>{viewer.drag=false});
+
+const fields={cam:'s',res:'n',fps:'n',pip:'b',auto:'b',sens:'n',pre:'n',post:'n',manual:'n'};
+function applyPip(){$('live').classList.toggle('off',!S.pip)}
+for(const [id,kind] of Object.entries(fields)){
+  const el=$(id);
+  if(kind==='b')el.checked=S[id];else el.value=S[id];
+  el.addEventListener('change',()=>{
+    let v=kind==='b'?el.checked:kind==='n'?+el.value:el.value;
+    if(kind==='n'&&el.min!==''){v=Math.max(+el.min,Math.min(+el.max,isNaN(v)?DEF[id]:v));el.value=v}
+    S[id]=v;save();
+    if(id==='pip')applyPip();
+    if(id==='cam'||id==='res'||id==='fps')startCamera();
+  });
+}
+
+/* Zone: a rectangle in fractions of the camera image. */
+function videoRect(){
+  const v=$('live'),W=innerWidth,H=innerHeight,vw=v.videoWidth||16,vh=v.videoHeight||9,k=Math.min(W/vw,H/vh);
+  return {x:(W-vw*k)/2,y:(H-vh*k)/2,w:vw*k,h:vh*k};
+}
+function drawZone(z){
+  const r=videoRect(),b=$('zoneBox');z=z||{x:0,y:0,w:1,h:1};
+  b.style.left=r.x+z.x*r.w+'px';b.style.top=r.y+z.y*r.h+'px';b.style.width=z.w*r.w+'px';b.style.height=z.h*r.h+'px';
+}
+let zoneStart=null,zoneDraft=null;
+const zonePoint=e=>{const r=videoRect();return {x:Math.max(0,Math.min(1,(e.clientX-r.x)/r.w)),y:Math.max(0,Math.min(1,(e.clientY-r.y)/r.h))}};
+$('zoneBtn').onclick=()=>{$('settings').hidden=true;$('live').classList.remove('off');$('live').classList.add('full');$('zone').hidden=false;zoneDraft=S.zone;drawZone(zoneDraft)};
+$('zone').addEventListener('pointerdown',e=>{if(e.target.closest('#zoneBar'))return;zoneStart=zonePoint(e);$('zone').setPointerCapture(e.pointerId)});
+$('zone').addEventListener('pointermove',e=>{
+  if(!zoneStart)return;const p=zonePoint(e);
+  zoneDraft={x:Math.min(p.x,zoneStart.x),y:Math.min(p.y,zoneStart.y),w:Math.abs(p.x-zoneStart.x),h:Math.abs(p.y-zoneStart.y)};drawZone(zoneDraft);
+});
+for(const e of ['pointerup','pointercancel'])$('zone').addEventListener(e,()=>{zoneStart=null;if(zoneDraft&&(zoneDraft.w<0.05||zoneDraft.h<0.05)){zoneDraft=S.zone;drawZone(zoneDraft)}});
+$('zoneAll').onclick=()=>{zoneDraft=null;drawZone(null)};
+$('zoneDone').onclick=()=>{S.zone=zoneDraft;save();prev=null;$('zone').hidden=true;$('live').classList.remove('full');applyPip();$('settings').hidden=false};
+addEventListener('resize',()=>{if(!$('zone').hidden)drawZone(zoneDraft)});
+
+/* Keep the screen on while the page is in front. */
+let wake=null;
+async function keepAwake(){try{if('wakeLock' in navigator&&document.visibilityState==='visible')wake=await navigator.wakeLock.request('screen')}catch{}}
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState!=='visible'||!started)return;
+  keepAwake();
+  if(!track||track.readyState!=='live')startCamera();
+});
+
+function start(){
+  started=true;$('msg').classList.remove('start');$('bar').hidden=false;
+  showDelay();applyPip();renderClips();keepAwake();startCamera();
+}
+$('startBtn').onclick=()=>{document.documentElement.requestFullscreen().catch(()=>{});start()};
+if(new URLSearchParams(location.search).has('auto'))start();
+requestAnimationFrame(loop);
+if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('sw.js').catch(()=>{});
+window.GR={live,clips,stat,viewer,livePlayer,saveManual,openClip,step,get state(){return {encState,encLabel,fatal,offMs,wallTs,score,buf:live.buf.length}}};
+</script>
+</body>
+</html>
