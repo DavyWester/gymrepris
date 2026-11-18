@@ -102,6 +102,8 @@ button.on{border-color:var(--accent);color:var(--accent)}
   <label>Upplösning <select id="res"><option value="720">720p</option><option value="1080">1080p</option></select></label>
   <label>Bilder per sekund <select id="fps"><option value="30">30</option><option value="60">60</option></select></label>
   <label>Visa livebild i hörnet <input type="checkbox" id="pip"></label>
+  <label>Viloläge utan rörelse <select id="idle"><option value="0">Av</option><option value="1">Efter 1 minut</option><option value="2">Efter 2 minuter</option><option value="5">Efter 5 minuter</option><option value="10">Efter 10 minuter</option></select></label>
+  <p class="hint">I viloläge släcks reprisbilden för att spara batteri. Kameran fortsätter, och bilden kommer tillbaka när något rör sig eller när du trycker på skärmen.</p>
   <h3>Klipp</h3>
   <label>Spara klipp automatiskt vid rörelse <input type="checkbox" id="auto"></label>
   <label>Känslighet <input type="range" id="sens" min="1" max="10" step="1"></label>
@@ -148,8 +150,8 @@ button.on{border-color:var(--accent);color:var(--accent)}
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-const VERSION=6,MAX_CLIPS=3, MAX_CLIP_S=20, KEY_EVERY_US=500000;
-const DEF={delay:8,res:720,fps:60,cam:'',pip:true,auto:true,sens:5,zone:null,pre:2,post:1.5,manual:10,speed:0.5};
+const VERSION=7,MAX_CLIPS=3, MAX_CLIP_S=20, KEY_EVERY_US=500000;
+const DEF={delay:8,res:720,fps:60,cam:'',pip:true,auto:true,sens:5,zone:null,pre:2,post:1.5,manual:10,speed:0.5,idle:2};
 let S=Object.assign({},DEF);
 try{Object.assign(S,JSON.parse(localStorage.getItem('gymrepris')||'{}'))}catch{}
 // A stored value that is not a number of the right kind falls back to the default.
@@ -190,10 +192,16 @@ class Player{
     const inRange=this.feed>=s.first&&this.feed<=s.end;
     const behind=inRange&&this.feed<=want&&wantTs-s.get(this.feed).timestamp>1.5e6;
     // A wanted frame that the decoder has already gone past, or that lies before the key frame it started at, needs a new start.
-    if(this.dead||!inRange||this.passed>wantTs||this.fromTs>wantTs||behind){
+    if(this.dead||!inRange||this.passed>wantTs||this.fromTs>wantTs){
       if(now<this.retryAt)return false;
       this.retryAt=now+120;
       if(!this.resync(want))return false;
+    }
+    if(behind){
+      // A decoder that has fallen behind continues from the newest key frame. It is not restarted: a hardware decoder
+      // can need longer than this to start, and would then never get to show anything.
+      let k=want;while(k>this.feed&&s.get(k).type!=='key')k--;
+      this.feed=k;
     }
     try{
       // Only a few decoded frames are held at a time; a hardware decoder stalls when its output pool is full.
@@ -238,7 +246,7 @@ function stopCamera(){
   stream=null;track=null;
 }
 async function startCamera(){
-  const my=++session;stopCamera();fatal='';encErrors=0;
+  const my=++session;stopCamera();fatal='';encErrors=0;lastActive=performance.now();
   if(!navigator.mediaDevices||!window.VideoEncoder||!window.VideoDecoder){fatal='Den här webbläsaren saknar det som behövs. Använd Chrome på surfplattan och öppna sidan över https.';return}
   const v={width:{ideal:S.res===1080?1920:1280},height:{ideal:S.res},frameRate:{ideal:S.fps}};
   if(S.cam)v.deviceId={exact:S.cam};else v.facingMode={ideal:'environment'};
@@ -339,7 +347,7 @@ const MW=96,MH=54;
 const mc=document.createElement('canvas');mc.width=MW;mc.height=MH;
 const mx=mc.getContext('2d',{willReadFrequently:true});
 const tc=document.createElement('canvas');tc.width=192;tc.height=108;const tx=tc.getContext('2d');
-let prev=null,score=0,clipId=0;
+let prev=null,score=0,clipId=0,lastActive=performance.now(),idle=false;
 const mot={state:0,start:0,last:0,n:0,peak:0,thumb:''};
 const clips=[];
 const threshold=()=>0.08*Math.pow(0.003/0.08,(S.sens-1)/9);
@@ -354,6 +362,7 @@ function sampleMotion(f,ts){
   for(let i=0,j=0;j<cur.length;i+=4,j++){const l=(d[i]+2*d[i+1]+d[i+2])>>2;cur[j]=l;if(prev&&Math.abs(l-prev[j])>22)changed++}
   const first=!prev;prev=cur;if(first)return;
   score=changed/cur.length;
+  if(score>threshold())lastActive=performance.now();
   const active=S.auto&&score>threshold();
   if(mot.state===0){
     if(active){mot.state=1;mot.start=mot.last=ts;mot.n=1;mot.peak=score;mot.thumb=thumbOf(f,W,H)}
@@ -514,10 +523,19 @@ function loop(){
   const now=performance.now();
   if(toastUntil&&now>toastUntil){$('toast').hidden=true;toastUntil=0}
   if(!started)return;
+  // The replay of the last movement is shown to its end before the picture goes dark.
+  const busy=viewer.open||!$('settings').hidden||!$('zone').hidden;
+  if(busy)lastActive=now;
+  const rest=S.idle>0&&!busy&&now-lastActive>Math.max(S.idle*60,S.delay+10)*1000;
+  if(rest!==idle){
+    idle=rest;$('view').hidden=idle;applyPip();
+    if(idle)livePlayer.close();else livePlayer.dead=true;
+  }
   const msg=$('msg');let text='',big='';
   if(viewer.open)viewerTick(now);
   else if(fatal)text=fatal;
   else if(offMs===null||!liveCfg||!live.buf.length)text='Startar kameran …';
+  else if(idle)text='Viloläge. Bilden kommer tillbaka när något rör sig eller när du trycker på skärmen.';
   else{
     const target=(now-offMs-S.delay*1000)*1000;
     livePlayer.tick(target);
@@ -567,8 +585,8 @@ seek.addEventListener('pointerdown',()=>{viewer.drag=true;viewer.resume=viewer.p
 seek.addEventListener('input',()=>{viewer.playing=false;viewer.pos=seek.value/1000*viewer.clip.dur});
 for(const e of ['pointerup','pointercancel','change'])seek.addEventListener(e,()=>{if(viewer.drag&&viewer.resume&&viewer.open)viewer.playing=true;viewer.drag=false});
 
-const fields={cam:'s',res:'n',fps:'n',pip:'b',auto:'b',sens:'n',pre:'n',post:'n',manual:'n'};
-function applyPip(){$('live').classList.toggle('off',!S.pip)}
+const fields={cam:'s',res:'n',fps:'n',idle:'n',pip:'b',auto:'b',sens:'n',pre:'n',post:'n',manual:'n'};
+function applyPip(){$('live').classList.toggle('off',!S.pip||idle)}
 for(const [id,kind] of Object.entries(fields)){
   const el=$(id);
   if(kind==='b')el.checked=S[id];else el.value=S[id];
@@ -603,6 +621,8 @@ $('zoneAll').onclick=()=>{zoneDraft=null;drawZone(null)};
 $('zoneDone').onclick=()=>{S.zone=zoneDraft;save();prev=null;$('zone').hidden=true;$('live').classList.remove('full');applyPip();$('settings').hidden=false};
 addEventListener('resize',()=>{if(!$('zone').hidden)drawZone(zoneDraft)});
 
+addEventListener('pointerdown',()=>{lastActive=performance.now()},true);
+
 /* Keep the screen on while the page is in front. */
 let wake=null;
 async function keepAwake(){try{if('wakeLock' in navigator&&document.visibilityState==='visible')wake=await navigator.wakeLock.request('screen')}catch{}}
@@ -620,7 +640,7 @@ $('startBtn').onclick=()=>{document.documentElement.requestFullscreen().catch(()
 if(new URLSearchParams(location.search).has('auto'))start();
 requestAnimationFrame(loop);
 if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('sw.js').catch(()=>{});
-window.GR={makeMp4,live,clips,stat,viewer,livePlayer,saveManual,openClip,step,get state(){return {encState,encLabel,fatal,offMs,wallTs,score,buf:live.buf.length}}};
+window.GR={makeMp4,live,clips,stat,viewer,livePlayer,saveManual,openClip,step,get state(){return {idle,encState,encLabel,fatal,offMs,wallTs,score,buf:live.buf.length}}};
 </script>
 </body>
 </html>
