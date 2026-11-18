@@ -137,7 +137,7 @@ button.on{border-color:var(--accent);color:var(--accent)}
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-const VERSION=4,MAX_CLIPS=3, MAX_CLIP_S=20, KEY_EVERY_US=500000;
+const VERSION=5,MAX_CLIPS=3, MAX_CLIP_S=20, KEY_EVERY_US=500000;
 const DEF={delay:8,res:720,fps:60,cam:'',pip:true,auto:true,sens:5,zone:null,pre:2,post:1.5,manual:10,speed:0.5};
 let S=Object.assign({},DEF);
 try{Object.assign(S,JSON.parse(localStorage.getItem('gymrepris')||'{}'))}catch{}
@@ -467,9 +467,10 @@ $('playBtn').onclick=togglePlay;
 $('clipCanvas').onclick=togglePlay;
 $('speeds').onclick=e=>{const s=+e.target.dataset.s;if(s){S.speed=s;save();markSpeed()}};
 const seek=$('seek');
-seek.addEventListener('pointerdown',()=>{viewer.drag=true});
+// Dragging pauses the clip; letting go resumes it if it was playing when the drag began.
+seek.addEventListener('pointerdown',()=>{viewer.drag=true;viewer.resume=viewer.playing});
 seek.addEventListener('input',()=>{viewer.playing=false;viewer.pos=seek.value/1000*viewer.clip.dur});
-for(const e of ['pointerup','pointercancel','change'])seek.addEventListener(e,()=>{viewer.drag=false});
+for(const e of ['pointerup','pointercancel','change'])seek.addEventListener(e,()=>{if(viewer.drag&&viewer.resume&&viewer.open)viewer.playing=true;viewer.drag=false});
 
 const fields={cam:'s',res:'n',fps:'n',pip:'b',auto:'b',sens:'n',pre:'n',post:'n',manual:'n'};
 function applyPip(){$('live').classList.toggle('off',!S.pip)}
