@@ -62,6 +62,11 @@ button.on{border-color:var(--accent);color:var(--accent)}
 #clipBar{position:absolute;left:0;right:0;bottom:0;z-index:2;display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));background:linear-gradient(#0000,#000d 35%)}
 #seek{flex:1 1 240px;height:44px;accent-color:var(--accent)}
 #clipTime{font-variant-numeric:tabular-nums;min-width:8.5em;text-align:right}
+#confirm{position:absolute;inset:0;z-index:50;background:#000a;display:flex;align-items:center;justify-content:center;padding:16px}
+#confirm>div{background:var(--bg);border:1px solid var(--line);border-radius:16px;padding:24px;max-width:26em;display:flex;flex-direction:column;gap:20px}
+#confirm p{margin:0;font-size:20px}
+#confirm span{display:flex;gap:12px;justify-content:flex-end}
+#confirm button{min-width:120px}
 #toast{position:absolute;top:70px;left:50%;transform:translateX(-50%);z-index:40;background:var(--accent);color:#1a1400;font-weight:700;border-radius:999px;padding:10px 20px}
 </style>
 </head>
@@ -120,7 +125,7 @@ button.on{border-color:var(--accent);color:var(--accent)}
 
 <div id="clipView" hidden>
   <canvas id="clipCanvas"></canvas>
-  <div id="clipTop"><span id="clipTitle"></span><button id="clipClose">Stäng</button></div>
+  <div id="clipTop"><span id="clipTitle"></span><span style="display:flex;gap:10px"><button id="clipSave">Spara på surfplattan</button><button id="clipClose">Stäng</button></span></div>
   <div id="clipBar">
     <button id="stepB" aria-label="En bild bakåt">−1 bild</button>
     <button id="playBtn" class="primary" style="min-width:110px">Paus</button>
@@ -132,12 +137,18 @@ button.on{border-color:var(--accent);color:var(--accent)}
     <span id="clipTime"></span>
   </div>
 </div>
+<div id="confirm" hidden>
+  <div>
+    <p id="confirmText"></p>
+    <span><button id="confirmNo">Avbryt</button><button id="confirmYes" class="primary">Spara</button></span>
+  </div>
+</div>
 <div id="toast" hidden></div>
 
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-const VERSION=5,MAX_CLIPS=3, MAX_CLIP_S=20, KEY_EVERY_US=500000;
+const VERSION=6,MAX_CLIPS=3, MAX_CLIP_S=20, KEY_EVERY_US=500000;
 const DEF={delay:8,res:720,fps:60,cam:'',pip:true,auto:true,sens:5,zone:null,pre:2,post:1.5,manual:10,speed:0.5};
 let S=Object.assign({},DEF);
 try{Object.assign(S,JSON.parse(localStorage.getItem('gymrepris')||'{}'))}catch{}
@@ -414,9 +425,90 @@ function viewerTick(now){
   $('clipTime').textContent=(v.pos/1e6).toFixed(2)+' / '+(v.clip.dur/1e6).toFixed(2)+' s';
 }
 
+/* ---------- Saving a clip as an MP4 file ---------- */
+function cat(parts){let n=0;for(const p of parts)n+=p.length;const o=new Uint8Array(n);let i=0;for(const p of parts){o.set(p,i);i+=p.length}return o}
+const u32=n=>[n>>>24,n>>>16&255,n>>>8&255,n&255],u16=n=>[n>>8&255,n&255],zeros=n=>new Array(n).fill(0),str=t=>[...t].map(c=>c.charCodeAt(0));
+const box=(type,...parts)=>{const body=cat(parts);return cat([u32(body.length+8),str(type),body])};
+// The units of one encoded frame, without the start codes that separate them.
+function nalUnits(d){
+  const out=[],n=d.length;let i=0,start=-1;
+  while(i+3<=n){
+    if(d[i]===0&&d[i+1]===0&&(d[i+2]===1||(d[i+2]===0&&d[i+3]===1))){if(start>=0)out.push(d.subarray(start,i));i+=d[i+2]===1?3:4;start=i}
+    else i++;
+  }
+  if(start>=0)out.push(d.subarray(start,n));
+  return out;
+}
+// Null when the clip is not H.264, the only codec the file writer knows.
+function makeMp4(clip){
+  const cfg=clip.cfg;if(!cfg.codec.startsWith('avc1'))return null;
+  const TS=90000,samples=[],times=[],keys=[];let sps=null,pps=null,avcC=null;
+  if(cfg.description){const d=cfg.description;avcC=d instanceof ArrayBuffer?new Uint8Array(d):new Uint8Array(d.buffer,d.byteOffset,d.byteLength)}
+  clip.chunks.forEach((c,i)=>{
+    let data=new Uint8Array(c.byteLength);c.copyTo(data);
+    if(!cfg.description){
+      // Each unit gets its length in front; the parameter sets go in the file header instead.
+      const parts=[];
+      for(const u of nalUnits(data)){
+        const t=u[0]&31;
+        if(t===7){sps=sps||u;continue}
+        if(t===8){pps=pps||u;continue}
+        if(t===9||!u.length)continue;
+        parts.push(u32(u.length),u);
+      }
+      data=cat(parts);
+    }
+    samples.push(data);times.push(Math.round((c.timestamp-clip.t0)*TS/1e6));if(c.type==='key')keys.push(i+1);
+  });
+  if(!avcC){
+    if(!sps||!pps)return null;
+    const high=[100,110,122,144].includes(sps[1])?[0xfd,0xf8,0xf8,0]:[];
+    avcC=cat([[1,sps[1],sps[2],sps[3],0xff,0xe1],u16(sps.length),sps,[1],u16(pps.length),pps,high]);
+  }
+  const n=samples.length,stts=[];let last=3000,total=0;
+  for(let i=0;i<n;i++){
+    const d=i+1<n?Math.max(1,times[i+1]-times[i]):last;last=d;total+=d;
+    const run=stts[stts.length-1];
+    if(run&&run[1]===d)run[0]++;else stts.push([1,d]);
+  }
+  const w=cfg.codedWidth,h=cfg.codedHeight,matrix=[...u32(0x10000),...zeros(12),...u32(0x10000),...zeros(12),...u32(0x40000000)];
+  const ftyp=box('ftyp',str('isom'),u32(512),str('isomiso2avc1mp41'));
+  const moov=offset=>box('moov',
+    box('mvhd',zeros(12),u32(TS),u32(total),u32(0x10000),[1,0],zeros(10),matrix,zeros(24),u32(2)),
+    box('trak',
+      box('tkhd',[0,0,0,3],zeros(8),u32(1),zeros(4),u32(total),zeros(16),matrix,u32(w*65536),u32(h*65536)),
+      box('mdia',
+        box('mdhd',zeros(12),u32(TS),u32(total),[0x55,0xc4,0,0]),
+        box('hdlr',zeros(8),str('vide'),zeros(12),str('Video'),[0]),
+        box('minf',
+          box('vmhd',[0,0,0,1],zeros(8)),
+          box('dinf',box('dref',zeros(4),u32(1),box('url ',[0,0,0,1]))),
+          box('stbl',
+            box('stsd',zeros(4),u32(1),box('avc1',zeros(6),[0,1],zeros(16),u16(w),u16(h),u32(0x480000),u32(0x480000),zeros(4),[0,1],zeros(32),[0,24,255,255],box('avcC',avcC))),
+            box('stts',zeros(4),u32(stts.length),stts.flatMap(r=>[...u32(r[0]),...u32(r[1])])),
+            box('stss',zeros(4),u32(keys.length),keys.flatMap(u32)),
+            box('stsc',zeros(4),u32(1),u32(1),u32(n),u32(1)),
+            box('stsz',zeros(8),u32(n),samples.flatMap(d=>u32(d.length))),
+            box('stco',zeros(4),u32(1),u32(offset)))))));
+  const size=samples.reduce((a,d)=>a+d.length,0);
+  const head=moov(ftyp.length+moov(0).length+8);
+  return new Blob([ftyp,head,cat([u32(size+8),str('mdat')]),...samples],{type:'video/mp4'});
+}
+function fileName(c){const p=n=>String(n).padStart(2,'0'),d=c.at;return 'gymrepris-'+d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds())+'.mp4'}
+function saveToDevice(c){
+  let blob=null;
+  try{blob=makeMp4(c)}catch(e){console.warn('mp4',e)}
+  if(!blob){toast('Klippet kunde inte sparas som fil');return}
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=fileName(c);
+  document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),60000);
+  toast('Sparas i Hämtade filer: '+a.download);
+}
+let confirmYes=null;
+function ask(text,yes){$('confirmText').textContent=text;confirmYes=yes;$('confirm').hidden=false}
+
 /* ---------- Screen loop ---------- */
 let started=false,toastUntil=0;
-function toast(t){$('toast').textContent=t;$('toast').hidden=false;toastUntil=performance.now()+1800}
+function toast(t){$('toast').textContent=t;$('toast').hidden=false;toastUntil=performance.now()+(t.length>30?4000:1800)}
 function loop(){
   requestAnimationFrame(loop);
   const now=performance.now();
@@ -463,6 +555,9 @@ $('fsBtn').onclick=()=>{if(document.fullscreenElement)document.exitFullscreen();
 $('setBtn').onclick=()=>{$('settings').hidden=false};
 $('setClose').onclick=()=>{$('settings').hidden=true};
 $('clipClose').onclick=closeClip;
+$('clipSave').onclick=()=>{const c=viewer.clip;ask('Spara klippet från '+hhmmss(c.at)+' som en videofil på surfplattan?',()=>saveToDevice(c))};
+$('confirmNo').onclick=()=>{$('confirm').hidden=true};
+$('confirmYes').onclick=()=>{$('confirm').hidden=true;if(confirmYes)confirmYes()};
 $('playBtn').onclick=togglePlay;
 $('clipCanvas').onclick=togglePlay;
 $('speeds').onclick=e=>{const s=+e.target.dataset.s;if(s){S.speed=s;save();markSpeed()}};
@@ -525,7 +620,7 @@ $('startBtn').onclick=()=>{document.documentElement.requestFullscreen().catch(()
 if(new URLSearchParams(location.search).has('auto'))start();
 requestAnimationFrame(loop);
 if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('sw.js').catch(()=>{});
-window.GR={live,clips,stat,viewer,livePlayer,saveManual,openClip,step,get state(){return {encState,encLabel,fatal,offMs,wallTs,score,buf:live.buf.length}}};
+window.GR={makeMp4,live,clips,stat,viewer,livePlayer,saveManual,openClip,step,get state(){return {encState,encLabel,fatal,offMs,wallTs,score,buf:live.buf.length}}};
 </script>
 </body>
 </html>
