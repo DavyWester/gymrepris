@@ -112,7 +112,9 @@ class Pipeline(private val act: Activity, private val s: Settings, private val u
         val size = sizes.filter { it.width * 9 == it.height * 16 }.minByOrNull { abs(it.height - s.res) } ?: sizes.first()
         val ranges = ch.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
         val fast = ranges.any { it.lower == 60 && it.upper == 60 } && map.getOutputMinFrameDuration(MediaCodec::class.java, size) <= 16_700_000
-        val fps = if (s.fps == 60 && fast) 60 else 30
+        // Samsung keeps 60 pictures a second out of the advertised list, but gives it when its own recording keys ask for it.
+        val hidden = s.fps == 60 && !fast
+        val fps = if (s.fps == 60) 60 else 30
         val range = ranges.firstOrNull { it.lower == fps && it.upper == fps } ?: ranges.filter { it.upper == fps }.maxByOrNull { it.lower } ?: Range(fps, fps)
         val yuv = map.getOutputSizes(ImageFormat.YUV_420_888)
         val small = yuv.filter { it.width >= 320 && it.width * size.height == it.height * size.width }.minByOrNull { it.width }
@@ -155,7 +157,11 @@ class Pipeline(private val act: Activity, private val s: Settings, private val u
                     isoSet = iso
                 }
                 request = b
-                d.createCaptureSession(SessionConfiguration(SessionConfiguration.SESSION_REGULAR, targets.map { OutputConfiguration(it) }, { cam.post(it) },
+                if (hidden) {
+                    vendor(b, "samsung.android.control.recordingMaxFps", fps)
+                    vendor(b, "samsung.android.control.recordingMinFps", fps)
+                }
+                val sc = SessionConfiguration(SessionConfiguration.SESSION_REGULAR, targets.map { OutputConfiguration(it) }, { cam.post(it) },
                     object : CameraCaptureSession.StateCallback() {
                         override fun onConfigured(cs: CameraCaptureSession) {
                             if (closed) return
@@ -163,11 +169,19 @@ class Pipeline(private val act: Activity, private val s: Settings, private val u
                             try { cs.setRepeatingRequest(b.build(), null, cam) } catch (e: Exception) { fail("Kameran kunde inte startas.", e) }
                         }
                         override fun onConfigureFailed(cs: CameraCaptureSession) = fail("Kameran klarar inte den valda inställningen.")
-                    }))
+                    })
+                // The sensor mode is chosen when the session is set up, so the frame rate has to be known then.
+                sc.sessionParameters = b.build()
+                try { d.createCaptureSession(sc) } catch (e: Exception) { fail("Kameran klarar inte den valda inställningen.", e) }
             }
             override fun onDisconnected(d: CameraDevice) { d.close(); if (!closed) fail("Kameran används av en annan app.") }
             override fun onError(d: CameraDevice, error: Int) { d.close(); if (!closed) fail("Kamerafel ($error).") }
         }, cam)
+    }
+
+    private fun vendor(b: CaptureRequest.Builder, name: String, v: Int) {
+        // Tablets of other makes do not know the key and refuse it.
+        try { b.set(CaptureRequest.Key(name, Int::class.javaObjectType), v) } catch (_: Exception) {}
     }
 
     private fun startEncoder(size: Size, fps: Int) {
