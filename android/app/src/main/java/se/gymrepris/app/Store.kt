@@ -2,6 +2,7 @@ package se.gymrepris.app
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.RectF
 import android.media.MediaFormat
 
 /** One encoded picture. A key frame carries the parameter sets in front, so decoding can start at any of them. */
@@ -117,6 +118,21 @@ class Settings(ctx: Context) {
     var post: Int get() = int("post", 3); set(v) = set("post", v)
     /** Seconds the button Spara klipp keeps. */
     var manual: Int get() = int("manual", 10); set(v) = set("manual", v)
+
+    /** The camera's id; empty for the one on the back. */
+    var cam: String get() = p.getString("cam", "")!!; set(v) = p.edit().putString("cam", v).apply()
+    /** Whether the picture as it is right now is shown in the corner. */
+    var pip: Int get() = int("pip", 1); set(v) = set("pip", v)
+
+    /** The part of the shown picture that is watched for movement, in fractions of it; null for all of it. */
+    var zone: RectF?
+        get() {
+            val w = p.getFloat("zw", 0f)
+            if (w <= 0f) return null
+            val x = p.getFloat("zx", 0f); val y = p.getFloat("zy", 0f)
+            return RectF(x, y, x + w, y + p.getFloat("zh", 0f))
+        }
+        set(v) = p.edit().putFloat("zx", v?.left ?: 0f).putFloat("zy", v?.top ?: 0f).putFloat("zw", v?.width() ?: 0f).putFloat("zh", v?.height() ?: 0f).apply()
 
     val preUs get() = pre * 500_000L
     val postUs get() = post * 500_000L

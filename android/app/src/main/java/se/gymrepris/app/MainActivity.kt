@@ -10,6 +10,8 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Outline
 import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.SurfaceTexture
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -27,7 +29,9 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.SurfaceHolder
+import android.view.Surface
 import android.view.SurfaceView
+import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -84,6 +88,47 @@ private class Meter(ctx: Context) : View(ctx) {
     }
 }
 
+/** The watched area, drawn with a finger on the picture. [area] is where the picture is on the screen. */
+private class ZoneView(ctx: Context, private val area: () -> RectF) : View(ctx) {
+    var zone: RectF? = null
+    var saved: RectF? = null
+    private var from: FloatArray? = null
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    private fun point(e: MotionEvent): FloatArray {
+        val a = area()
+        return floatArrayOf(((e.x - a.left) / a.width()).coerceIn(0f, 1f), ((e.y - a.top) / a.height()).coerceIn(0f, 1f))
+    }
+
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> from = point(e)
+            MotionEvent.ACTION_MOVE -> from?.let { f ->
+                val p = point(e)
+                zone = RectF(minOf(p[0], f[0]), minOf(p[1], f[1]), maxOf(p[0], f[0]), maxOf(p[1], f[1]))
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                from = null
+                // A tap or a sliver is not an area.
+                zone?.let { if (it.width() < 0.05f || it.height() < 0.05f) zone = saved }
+            }
+        }
+        invalidate()
+        return true
+    }
+
+    override fun onDraw(c: Canvas) {
+        val a = area()
+        val z = zone ?: RectF(0f, 0f, 1f, 1f)
+        val w = 3 * resources.displayMetrics.density
+        val r = RectF(a.left + z.left * a.width() + w / 2, a.top + z.top * a.height() + w / 2, a.left + z.right * a.width() - w / 2, a.top + z.bottom * a.height() - w / 2)
+        paint.style = Paint.Style.FILL; paint.color = Color.argb(0x22, 0xff, 0xd2, 0x3f)
+        c.drawRect(r, paint)
+        paint.style = Paint.Style.STROKE; paint.strokeWidth = w; paint.color = ACCENT
+        c.drawRect(r, paint)
+    }
+}
+
 class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
     private val maxClips = 3
     private lateinit var s: Settings
@@ -110,6 +155,11 @@ class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
     private lateinit var confirm: FrameLayout
     private lateinit var confirmText: TextView
     private lateinit var toastView: TextView
+    private lateinit var pipBox: FrameLayout
+    private lateinit var zone: FrameLayout
+    private lateinit var zoneView: ZoneView
+    private var pipSurface: Surface? = null
+    private var pipPlayer: Player? = null
     private var meter: Meter? = null
     private var infoText: TextView? = null
     private val speedBtns = ArrayList<Pair<Int, TextView>>()
@@ -171,6 +221,7 @@ class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
     override fun onBackPressed() {
         when {
             confirm.visibility == View.VISIBLE -> confirm.visibility = View.GONE
+            zone.visibility == View.VISIBLE -> closeZone()
             settings.visibility == View.VISIBLE -> settings.visibility = View.GONE
             open != null -> closeClip()
             else -> @Suppress("DEPRECATION") super.onBackPressed()
@@ -187,12 +238,23 @@ class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
 
     private fun stopPipeline() {
         if (open == null) stopPlayer()
+        stopPip()
         liveReady = false
         pipeline?.stop()
         pipeline = null
     }
 
     private fun stopPlayer() { player?.finish(); player = null }
+    private fun stopPip() { pipPlayer?.finish(); pipPlayer = null }
+
+    /** The picture as it is right now, in the corner. */
+    private fun startPip(p: Pipeline, to: Surface) {
+        val turned = p.rotation % 180 != 0
+        val w = minOf(root.width * 22 / 100, dp(260))
+        val h = w * (if (turned) p.width else p.height) / (if (turned) p.height else p.width)
+        pipBox.layoutParams = (pipBox.layoutParams as FrameLayout.LayoutParams).apply { width = w + dp(4); height = h + dp(4) }
+        pipPlayer = Player(to, p.live, p.width, p.height, p.rotation) { p.nowTs() ?: 0 }.also { it.start() }
+    }
 
     override fun onReady() {
         liveReady = true
@@ -207,7 +269,8 @@ class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
         stopPlayer()
         fit(p.width, p.height, p.rotation)
         player = Player(surface.holder.surface, p.live, p.width, p.height, p.rotation) {
-            (p.nowTs() ?: 0) - s.delay * 1_000_000L
+            // While the watched area is drawn the picture is the present one, so that someone can stand in it as a mark.
+            (p.nowTs() ?: 0) - if (zone.visibility == View.VISIBLE) 0 else s.delay * 1_000_000L
         }.also { it.start() }
     }
 
@@ -342,7 +405,8 @@ class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
         var text = ""
         var big = ""
 
-        val busy = settings.visibility == View.VISIBLE || confirm.visibility == View.VISIBLE
+        val zoning = zone.visibility == View.VISIBLE
+        val busy = settings.visibility == View.VISIBLE || confirm.visibility == View.VISIBLE || zoning
         if (busy) lastTouch = now
         // The replay of the last movement is shown to its end before the screen goes dark.
         val active = maxOf(lastTouch, p?.lastMotionMs ?: 0)
@@ -355,6 +419,11 @@ class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
             if (idle) stopPlayer() else if (c == null) startLive()
         }
 
+        val corner = s.pip == 1 && p != null && liveReady && c == null && !idle && !zoning
+        pipBox.visibility = if (corner) View.VISIBLE else View.GONE
+        val to = pipSurface
+        if (corner && to != null) { if (pipPlayer == null) startPip(p!!, to) } else stopPip()
+
         if (c != null) {
             val (at, isPlaying) = synchronized(lock) { pos to playing }
             playBtn.text = if (isPlaying) "Paus" else "Spela"
@@ -363,7 +432,7 @@ class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
         } else if (error != null) text = error!!
         else if (p == null || !liveReady) text = "Startar kameran …"
         else if (idle) text = "Viloläge. Bilden kommer tillbaka när något rör sig eller när du trycker på skärmen."
-        else {
+        else if (!zoning) {
             val first = p.live.firstTs()
             val t = p.nowTs()
             if (first != null && t != null) {
@@ -377,7 +446,7 @@ class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
         retry.visibility = if (error != null && c == null) View.VISIBLE else View.GONE
         message.visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
         message.setBackgroundColor(if (idle && c == null) Color.BLACK else Color.TRANSPARENT)
-        chip.visibility = if (p?.recording == true && c == null && !idle) View.VISIBLE else View.GONE
+        chip.visibility = if (p?.recording == true && c == null && !idle && !zoning) View.VISIBLE else View.GONE
 
         if (settings.visibility == View.VISIBLE) {
             meter?.let { m -> m.value = p?.score ?: 0f; m.limit = p?.threshold() ?: 0f; m.invalidate() }
@@ -507,6 +576,8 @@ class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
                 override fun onStopTrackingTouch(sb: SeekBar) {}
             })
         }
+        val cams = Pipeline.cameras(this)
+        val camNames = cams.mapIndexed { i, c -> c.first to i }.ifEmpty { listOf("Ingen" to 0) }
         val title = line(
             gap(text("Inställningar", 22f, FG, true), width = 0, weight = 1f),
             button("Stäng") { settings.visibility = View.GONE },
@@ -514,10 +585,12 @@ class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
         val rows = listOf(
             title,
             heading("Kamera"),
+            setting("Kamera", select(camNames, { cams.indexOfFirst { it.second == s.cam }.coerceAtLeast(0) }) { s.cam = cams.getOrNull(it)?.second ?: ""; startPipeline() }),
             setting("Upplösning", select(listOf("720p" to 720, "1080p" to 1080), { s.res }) { s.res = it; startPipeline() }),
             setting("Bilder per sekund", select(listOf("30" to 30, "60" to 60), { s.fps }) { s.fps = it; startPipeline() }),
             setting("Slutartid", select(shutters, { s.shutter }) { s.shutter = it; startPipeline() }),
             hint("En kort slutartid ger skarpare bildrutor i slow motion, men kräver bra ljus. I svagt ljus blir bilden mörk och brusig."),
+            setting("Visa livebild i hörnet", check(s.pip == 1) { s.pip = if (it) 1 else 0 }),
             setting("Viloläge utan rörelse", select(idles, { s.idle }) { s.idle = it }),
             hint("I viloläge släcks reprisbilden och skärmen tonas ned för att spara batteri. Kameran fortsätter, och bilden kommer tillbaka när något rör sig eller när du trycker på skärmen."),
             heading("Klipp"),
@@ -525,6 +598,7 @@ class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
             setting("Känslighet", sens),
             m.apply { layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, dp(16)) },
             hint("Stapeln visar rörelsen just nu. När den går förbi det röda strecket räknas det som en övning. Ställ känsligheten så att stapeln ligger under strecket när ingen hoppar."),
+            setting("Område som bevakas", button("Rita område") { openZone() }.apply { minimumHeight = dp(44); background = buttonBg(BTN, LINE, 10) }),
             setting("Sekunder före rörelsen", stepper(0, 10, { s.pre }, ::halves) { s.pre = it }),
             setting("Sekunder efter rörelsen", stepper(1, 10, { s.post }, ::halves) { s.post = it }),
             setting("Längd på knappen Spara klipp", stepper(3, 20, { s.manual }, { "$it s" }) { s.manual = it }),
@@ -535,6 +609,21 @@ class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
             if (width == WRAP_CONTENT) width = MATCH_PARENT
             bottomMargin = dp(14)
         })
+    }
+
+    private fun openZone() {
+        zoneView.saved = s.zone
+        zoneView.zone = s.zone
+        zoneView.invalidate()
+        settings.visibility = View.GONE
+        bar.visibility = View.GONE
+        zone.visibility = View.VISIBLE
+    }
+
+    private fun closeZone() {
+        zone.visibility = View.GONE
+        bar.visibility = View.VISIBLE
+        showSettings()
     }
 
     private fun showSettings() {
@@ -596,6 +685,26 @@ class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
             visibility = View.GONE
         }
         root.addView(chip, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.START).apply { setMargins(dp(12), dp(12), 0, 0) })
+
+        pipBox = FrameLayout(this).apply {
+            background = shape(Color.BLACK, LINE, 10).apply { setStroke(dp(2), LINE) }
+            clipToOutline = true
+            setPadding(dp(2), dp(2), dp(2), dp(2))
+            visibility = View.GONE
+            addView(TextureView(this@MainActivity).apply {
+                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                    override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) { pipSurface = Surface(st) }
+                    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+                    override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                    override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                        stopPip()
+                        pipSurface?.release(); pipSurface = null
+                        return true
+                    }
+                }
+            }, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        }
+        root.addView(pipBox, FrameLayout.LayoutParams(dp(260), dp(150), Gravity.TOP or Gravity.END).apply { setMargins(0, dp(12), dp(12), 0) })
 
         /* Bottom bar */
         delayValue = text("", 22f, FG, true).apply { gravity = Gravity.CENTER; fontFeatureSettings = "tnum" }
@@ -681,6 +790,23 @@ class MainActivity : Activity(), Pipeline.Listener, SurfaceHolder.Callback {
             visibility = View.GONE
         }
         root.addView(settings, FrameLayout.LayoutParams(dp(440), MATCH_PARENT, Gravity.END))
+
+        /* Drawing the watched area */
+        zoneView = ZoneView(this) { RectF(surface.left.toFloat(), surface.top.toFloat(), surface.right.toFloat(), surface.bottom.toFloat()) }
+        zone = FrameLayout(this).apply {
+            addView(zoneView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+                setBackgroundColor(Color.argb(0xaa, 0, 0, 0))
+                setPadding(dp(14), dp(14), dp(14), dp(14))
+                isClickable = true
+                addView(text("Dra en ruta över området där övningen görs.", 16f), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(14) })
+                addView(button("Hela bilden") { zoneView.zone = null; zoneView.invalidate() }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(10) })
+                addView(button("Klar", primary = true) { s.zone = zoneView.zone; closeZone() })
+            }, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM))
+            visibility = View.GONE
+        }
+        root.addView(zone, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
 
         /* Toast and confirmation */
         toastView = text("", 16f, ON_ACCENT, true).apply {

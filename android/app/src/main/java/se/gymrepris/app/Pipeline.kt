@@ -3,7 +3,9 @@ package se.gymrepris.app
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.graphics.Bitmap
+import android.content.Context
 import android.graphics.ImageFormat
+import android.graphics.RectF
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
@@ -28,10 +30,40 @@ import android.view.Surface
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.pow
 
 /** Camera to encoder to memory, with movement detection on a small side stream. */
 class Pipeline(private val act: Activity, private val s: Settings, private val ui: Listener) {
+    companion object {
+        /** The cameras by name and id, the one used when none is chosen first. */
+        fun cameras(ctx: Context): List<Pair<String, String>> {
+            val mgr = ctx.getSystemService(CameraManager::class.java)
+            fun facing(id: String) = mgr.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING)
+            // How much of the scene the lens takes in, as sensor width over focal length.
+            fun angle(id: String): Float {
+                val ch = mgr.getCameraCharacteristics(id)
+                val f = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: return 0f
+                return (ch.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)?.width ?: return 0f) / f
+            }
+            val out = ArrayList<Pair<String, String>>()
+            val sides = listOf(CameraMetadata.LENS_FACING_BACK to "Baksidan", CameraMetadata.LENS_FACING_FRONT to "Framsidan", CameraMetadata.LENS_FACING_EXTERNAL to "Extern")
+            for ((side, name) in sides) {
+                val ids = try { mgr.cameraIdList.filter { facing(it) == side } } catch (_: Exception) { emptyList() }
+                ids.forEachIndexed { i, id ->
+                    val a = angle(id); val a0 = angle(ids[0])
+                    out.add(when {
+                        i == 0 -> name
+                        a0 > 0 && a > a0 * 1.15f -> "$name, vidvinkel"
+                        a0 > 0 && a > 0 && a < a0 / 1.15f -> "$name, tele"
+                        else -> "$name ${i + 1}"
+                    } to id)
+                }
+            }
+            return out
+        }
+    }
+
     interface Listener {
         fun onReady()
         fun onClip(c: Clip)
@@ -103,8 +135,8 @@ class Pipeline(private val act: Activity, private val s: Settings, private val u
     @SuppressLint("MissingPermission")
     private fun open() {
         val mgr = act.getSystemService(CameraManager::class.java)
-        val id = mgr.cameraIdList.firstOrNull { mgr.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_BACK }
-            ?: mgr.cameraIdList.firstOrNull() ?: return fail("Surfplattan har ingen kamera.")
+        val all = cameras(act).map { it.second }
+        val id = all.firstOrNull { it == s.cam } ?: all.firstOrNull() ?: return fail("Surfplattan har ingen kamera.")
         val ch = mgr.getCameraCharacteristics(id)
         val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return fail("Kameran kan inte användas.")
 
@@ -123,7 +155,8 @@ class Pipeline(private val act: Activity, private val s: Settings, private val u
         val sensor = ch.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
         val display = when (act.display?.rotation) { Surface.ROTATION_90 -> 90; Surface.ROTATION_180 -> 180; Surface.ROTATION_270 -> 270; else -> 0 }
         width = size.width; height = size.height
-        rotation = (sensor - display + 360) % 360
+        val front = ch.get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_FRONT
+        rotation = (if (front) sensor + display else sensor - display + 360) % 360
 
         val caps = ch.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: IntArray(0)
         manual = s.shutter > 0 && caps.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)
@@ -243,6 +276,8 @@ class Pipeline(private val act: Activity, private val s: Settings, private val u
     private val gw = 96
     private val gh = 54
     private var prev: ByteArray? = null
+    private val cu = ByteArray(gw * gh)
+    private val cv = ByteArray(gw * gh)
     private var lastSample = 0L
     private var motStart = 0L
     private var motLast = 0L
@@ -259,24 +294,43 @@ class Pipeline(private val act: Activity, private val s: Settings, private val u
         lastSample = nowMs
         val plane = img.planes[0]
         val buf = plane.buffer
+        val up = img.planes[1]; val vp = img.planes[2]
+        val ub = up.buffer; val vb = vp.buffer
+
+        // The watched area is drawn on the picture as it is shown; the camera's picture may be turned.
+        var x0 = 0; var x1 = gw; var y0 = 0; var y1 = gh
+        s.zone?.let { z ->
+            val r = when (rotation) {
+                90 -> RectF(z.top, 1 - z.right, z.bottom, 1 - z.left)
+                180 -> RectF(1 - z.right, 1 - z.bottom, 1 - z.left, 1 - z.top)
+                270 -> RectF(1 - z.bottom, z.left, 1 - z.top, z.right)
+                else -> z
+            }
+            x0 = (r.left * gw).toInt().coerceIn(0, gw - 1); x1 = ceil(r.right * gw).toInt().coerceIn(x0 + 1, gw)
+            y0 = (r.top * gh).toInt().coerceIn(0, gh - 1); y1 = ceil(r.bottom * gh).toInt().coerceIn(y0 + 1, gh)
+        }
         val cur = ByteArray(gw * gh)
         var changed = 0
         var sum = 0L
         val old = prev
         for (y in 0 until gh) {
-            val row = (y * img.height / gh) * plane.rowStride
+            val sy = y * img.height / gh
+            val row = sy * plane.rowStride
             for (x in 0 until gw) {
-                val l = buf.get(row + (x * img.width / gw) * plane.pixelStride)
+                val sx = x * img.width / gw
+                val l = buf.get(row + sx * plane.pixelStride)
                 val i = y * gw + x
                 cur[i] = l
+                cu[i] = ub.get((sy / 2) * up.rowStride + (sx / 2) * up.pixelStride)
+                cv[i] = vb.get((sy / 2) * vp.rowStride + (sx / 2) * vp.pixelStride)
                 sum += l.toInt() and 0xff
-                if (old != null && abs((l.toInt() and 0xff) - (old[i].toInt() and 0xff)) > 22) changed++
+                if (old != null && x >= x0 && x < x1 && y >= y0 && y < y1 && abs((l.toInt() and 0xff) - (old[i].toInt() and 0xff)) > 22) changed++
             }
         }
         prev = cur
         adjustExposure((sum / cur.size).toInt())
         if (old == null) return
-        score = changed.toFloat() / cur.size
+        score = changed.toFloat() / ((x1 - x0) * (y1 - y0))
         val moving = score > threshold()
         if (moving) lastMotionMs = nowMs
         val ts = nowTs() ?: return
@@ -310,8 +364,14 @@ class Pipeline(private val act: Activity, private val s: Settings, private val u
         val px = IntArray(luma.size)
         val flip = rotation == 180
         for (i in luma.indices) {
-            val l = luma[if (flip) luma.size - 1 - i else i].toInt() and 0xff
-            px[i] = (0xff shl 24) or (l shl 16) or (l shl 8) or l
+            val j = if (flip) luma.size - 1 - i else i
+            val l = luma[j].toInt() and 0xff
+            val u = (cu[j].toInt() and 0xff) - 128
+            val v = (cv[j].toInt() and 0xff) - 128
+            val r = (l + 1.402f * v).toInt().coerceIn(0, 255)
+            val g = (l - 0.344f * u - 0.714f * v).toInt().coerceIn(0, 255)
+            val b = (l + 1.772f * u).toInt().coerceIn(0, 255)
+            px[i] = (0xff shl 24) or (r shl 16) or (g shl 8) or b
         }
         return Bitmap.createBitmap(px, gw, gh, Bitmap.Config.ARGB_8888)
     }
