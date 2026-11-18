@@ -137,7 +137,7 @@ button.on{border-color:var(--accent);color:var(--accent)}
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-const VERSION=3,MAX_CLIPS=3, MAX_CLIP_S=20, KEY_EVERY_US=500000;
+const VERSION=4,MAX_CLIPS=3, MAX_CLIP_S=20, KEY_EVERY_US=500000;
 const DEF={delay:8,res:720,fps:60,cam:'',pip:true,auto:true,sens:5,zone:null,pre:2,post:1.5,manual:10,speed:0.5};
 let S=Object.assign({},DEF);
 try{Object.assign(S,JSON.parse(localStorage.getItem('gymrepris')||'{}'))}catch{}
@@ -156,20 +156,21 @@ function findLE(s,ts){let lo=s.first,hi=s.end-1,r=s.first-1;while(lo<=hi){const 
 
 /* ---------- Player: shows the frame that belongs to a given timestamp ---------- */
 class Player{
-  constructor(canvas){this.cv=canvas;this.ctx=canvas.getContext('2d');this.pending=[];this.dec=null;this.cfg=null;this.src=null;this.feed=0;this.shown=-1;this.dead=true;this.flushed=false;this.catchup=0;this.retryAt=0;this.drawn=0;this.catchTs=0}
+  constructor(canvas){this.cv=canvas;this.ctx=canvas.getContext('2d');this.pending=[];this.dec=null;this.cfg=null;this.src=null;this.feed=0;this.shown=-1;this.dead=true;this.flushed=false;this.catchup=0;this.retryAt=0;this.drawn=0;this.catchTs=0;this.passed=-1;this.fromTs=0;this.soft=false}
   setCfg(c){this.cfg=c;this.dead=true}
   drop(){for(const f of this.pending)f.close();this.pending=[]}
   close(){this.drop();try{if(this.dec&&this.dec.state!=='closed')this.dec.close()}catch{}this.dec=null;this.dead=true}
   resync(want){
     const s=this.src;this.drop();
     try{
-      if(!this.dec||this.dec.state==='closed')this.dec=new VideoDecoder({output:f=>this.pending.push(f),error:e=>{console.warn('decoder',e);this.dead=true}});
+      if(!this.dec||this.dec.state==='closed')this.dec=new VideoDecoder({output:f=>this.pending.push(f),error:e=>{console.warn('decoder',e);this.dead=true;this.soft=false}});
       else this.dec.reset();
-      this.dec.configure(this.cfg);
+      // A software decoder starts at once and gives every frame back straight away, which is what jumping around in a clip needs.
+      this.dec.configure(this.soft?Object.assign({},this.cfg,{hardwareAcceleration:'prefer-software'}):this.cfg);
     }catch(e){console.warn('decoder setup',e);this.dec=null;return false}
     let i=want;while(i>s.first&&s.get(i).type!=='key')i--;
     if(s.get(i).type!=='key')return false;
-    this.feed=i;this.shown=-1;this.dead=false;this.flushed=false;this.catchup=performance.now();this.catchTs=s.get(want).timestamp;return true;
+    this.feed=i;this.fromTs=s.get(i).timestamp;this.passed=-1;this.shown=-1;this.dead=false;this.flushed=false;this.catchup=performance.now();this.catchTs=s.get(want).timestamp;return true;
   }
   tick(target){
     const s=this.src;if(!s||!this.cfg||s.end<=s.first)return false;
@@ -177,7 +178,8 @@ class Player{
     const wantTs=s.get(want).timestamp,now=performance.now();
     const inRange=this.feed>=s.first&&this.feed<=s.end;
     const behind=inRange&&this.feed<=want&&wantTs-s.get(this.feed).timestamp>1.5e6;
-    if(this.dead||!inRange||this.shown>wantTs||behind){
+    // A wanted frame that the decoder has already gone past, or that lies before the key frame it started at, needs a new start.
+    if(this.dead||!inRange||this.passed>wantTs||this.fromTs>wantTs||behind){
       if(now<this.retryAt)return false;
       this.retryAt=now+120;
       if(!this.resync(want))return false;
@@ -191,10 +193,10 @@ class Player{
       if(s.static&&this.feed===s.end&&!this.flushed){this.flushed=true;this.dec.flush().catch(()=>{})}
     }catch(e){console.warn('decode',e);this.dead=true;return false}
     let f=null;
-    while(this.pending.length&&this.pending[0].timestamp<=target){if(f)f.close();f=this.pending.shift()}
+    while(this.pending.length&&this.pending[0].timestamp<=target){if(f)f.close();f=this.pending.shift();this.passed=f.timestamp}
     if(f){
       // After a jump the frames between the key frame and the wanted frame are decoded but not shown.
-      if(!this.catchup||f.timestamp>=this.catchTs||now-this.catchup>1500){
+      if(!this.catchup||f.timestamp>=this.catchTs||f.timestamp>=wantTs||now-this.catchup>1500){
         const w=f.displayWidth,h=f.displayHeight;
         if(this.cv.width!==w||this.cv.height!==h){this.cv.width=w;this.cv.height=h}
         this.ctx.drawImage(f,0,0,w,h);this.shown=f.timestamp;this.catchup=0;this.drawn++;
@@ -389,7 +391,8 @@ function renderClips(isNew){
 /* ---------- Clip viewer ---------- */
 const viewer={open:false,clip:null,src:null,pos:0,playing:false,last:0,drag:false,player:new Player($('clipCanvas'))};
 function openClip(c){
-  viewer.clip=c;viewer.src=clipSource(c.chunks);viewer.player.src=viewer.src;viewer.player.setCfg(c.cfg);
+  viewer.clip=c;viewer.src=clipSource(c.chunks);viewer.player.src=viewer.src;viewer.player.setCfg(c.cfg);viewer.player.soft=false;
+  VideoDecoder.isConfigSupported(Object.assign({},c.cfg,{hardwareAcceleration:'prefer-software'})).then(r=>{if(r.supported&&viewer.open&&viewer.clip===c){viewer.player.soft=true;viewer.player.dead=true}}).catch(()=>{});
   viewer.pos=0;viewer.playing=true;viewer.last=performance.now();viewer.open=true;
   $('clipTitle').textContent='Klipp '+hhmmss(c.at);
   $('clipView').hidden=false;markSpeed();
