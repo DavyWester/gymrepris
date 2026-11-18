@@ -137,7 +137,7 @@ button.on{border-color:var(--accent);color:var(--accent)}
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-const MAX_CLIPS=3, MAX_CLIP_S=20, KEY_EVERY_US=500000;
+const VERSION=3,MAX_CLIPS=3, MAX_CLIP_S=20, KEY_EVERY_US=500000;
 const DEF={delay:8,res:720,fps:60,cam:'',pip:true,auto:true,sens:5,zone:null,pre:2,post:1.5,manual:10,speed:0.5};
 let S=Object.assign({},DEF);
 try{Object.assign(S,JSON.parse(localStorage.getItem('gymrepris')||'{}'))}catch{}
@@ -156,7 +156,7 @@ function findLE(s,ts){let lo=s.first,hi=s.end-1,r=s.first-1;while(lo<=hi){const 
 
 /* ---------- Player: shows the frame that belongs to a given timestamp ---------- */
 class Player{
-  constructor(canvas){this.cv=canvas;this.ctx=canvas.getContext('2d');this.pending=[];this.dec=null;this.cfg=null;this.src=null;this.feed=0;this.shown=-1;this.dead=true;this.flushed=false;this.catchup=0;this.retryAt=0;this.drawn=0}
+  constructor(canvas){this.cv=canvas;this.ctx=canvas.getContext('2d');this.pending=[];this.dec=null;this.cfg=null;this.src=null;this.feed=0;this.shown=-1;this.dead=true;this.flushed=false;this.catchup=0;this.retryAt=0;this.drawn=0;this.catchTs=0}
   setCfg(c){this.cfg=c;this.dead=true}
   drop(){for(const f of this.pending)f.close();this.pending=[]}
   close(){this.drop();try{if(this.dec&&this.dec.state!=='closed')this.dec.close()}catch{}this.dec=null;this.dead=true}
@@ -169,7 +169,7 @@ class Player{
     }catch(e){console.warn('decoder setup',e);this.dec=null;return false}
     let i=want;while(i>s.first&&s.get(i).type!=='key')i--;
     if(s.get(i).type!=='key')return false;
-    this.feed=i;this.shown=-1;this.dead=false;this.flushed=false;this.catchup=performance.now();return true;
+    this.feed=i;this.shown=-1;this.dead=false;this.flushed=false;this.catchup=performance.now();this.catchTs=s.get(want).timestamp;return true;
   }
   tick(target){
     const s=this.src;if(!s||!this.cfg||s.end<=s.first)return false;
@@ -194,7 +194,7 @@ class Player{
     while(this.pending.length&&this.pending[0].timestamp<=target){if(f)f.close();f=this.pending.shift()}
     if(f){
       // After a jump the frames between the key frame and the wanted frame are decoded but not shown.
-      if(!this.catchup||f.timestamp>=wantTs||now-this.catchup>1500){
+      if(!this.catchup||f.timestamp>=this.catchTs||now-this.catchup>1500){
         const w=f.displayWidth,h=f.displayHeight;
         if(this.cv.width!==w||this.cv.height!==h){this.cv.width=w;this.cv.height=h}
         this.ctx.drawImage(f,0,0,w,h);this.shown=f.timestamp;this.catchup=0;this.drawn++;
@@ -233,7 +233,7 @@ async function startCamera(){
   try{st=await navigator.mediaDevices.getUserMedia({video:v,audio:false})}
   catch(e){
     if(S.cam&&e.name!=='NotAllowedError'){S.cam='';save();return startCamera()}
-    fatal=e.name==='NotAllowedError'?'Sidan får inte använda kameran. Tillåt kameran i webbläsarens inställningar för sidan och försök igen.':'Kameran kunde inte startas ('+e.name+').';
+    fatal=e.name==='NotAllowedError'?'Sidan får inte använda kameran. Tillåt kameran i webbläsarens inställningar för sidan och försök igen.':e.name==='NotReadableError'?'Kameran är upptagen. Stäng andra flikar och appar som använder kameran och försök igen.':'Kameran kunde inte startas ('+e.name+').';
     return;
   }
   if(my!==session){st.getTracks().forEach(t=>t.stop());return}
@@ -306,7 +306,7 @@ async function initEncoder(w,h,my){
 }
 const avcName=c=>c.startsWith('avc1')?'H.264':c.startsWith('vp09')?'VP9':'VP8';
 function onChunk(c,meta){
-  if(meta&&meta.decoderConfig){
+  if(!liveCfg&&meta&&meta.decoderConfig){
     const d=meta.decoderConfig;
     liveCfg={codec:d.codec,codedWidth:d.codedWidth||encW,codedHeight:d.codedHeight||encH,optimizeForLatency:true};
     if(d.description)liveCfg.description=d.description;
@@ -441,7 +441,7 @@ function loop(){
     const thr=threshold(),scale=v=>Math.min(100,Math.sqrt(v/0.3)*100);
     $('meterFill').style.width=scale(score)+'%';$('meterFill').classList.toggle('hit',score>thr);
     $('meterThr').style.left=scale(thr)+'%';
-    $('info').textContent=encLabel+(wallTs?' · egen klocka':'');
+    $('info').textContent='Kameran ger: '+encLabel+(wallTs?' · egen klocka':'')+' · version '+VERSION;
   }
 }
 
